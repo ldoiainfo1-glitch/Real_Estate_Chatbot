@@ -91,6 +91,21 @@ def home():
     return jsonify({"status": "running", "model": MODEL})
 
 
+DETAILED_KEYWORDS = [
+    "explain", "detail", "in depth", "elaborate", "how to", "process",
+    "step by step", "steps", "procedure", "guide", "full", "complete",
+    "everything", "tell me more", "what happens", "how does", "describe",
+    "difference between", "compare", "checklist", "documents required",
+    "what are the", "risks of", "legal process", "registration process"
+]
+
+def detect_mode(prompt: str) -> str:
+    prompt_lower = prompt.lower()
+    if any(kw in prompt_lower for kw in DETAILED_KEYWORDS):
+        return "detailed"
+    return "short"
+
+
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
@@ -101,6 +116,30 @@ def chat():
 
         states = detect_states(prompt)
         knowledge = fetch_documents(states)
+        mode = detect_mode(prompt)  # auto detect
+
+        if mode == "detailed":
+            instruction = """
+Provide a DETAILED answer with:
+- Full explanation of the legal concept
+- Step-by-step process if applicable
+- State-specific differences
+- Required documents list
+- Common mistakes to avoid
+- Real example scenario
+- Risk assessment 🟢/🟡/🔴
+- End with: "⚠️ This is informational guidance only and does not constitute legal advice."
+"""
+            max_tokens = 4096
+        else:
+            instruction = """
+Provide a SHORT and DIRECT answer:
+- 3-5 bullet points max
+- Simple plain language
+- Key risk label 🟢/🟡/🔴 only if relevant
+- One line disclaimer at end
+"""
+            max_tokens = 512
 
         full_prompt = f"""{PLATFORM_CONTEXT}
 
@@ -109,13 +148,7 @@ KNOWLEDGE BASE (use ONLY this for your answer):
 
 QUESTION: {prompt}
 
-INSTRUCTIONS:
-- Answer in clear simple language for a layperson.
-- Mention the relevant state explicitly if state-specific.
-- If answer not in knowledge base say:
-  "I could not find that information. Please consult a licensed property advocate."
-- Add risk label 🟢/🟡/🔴 where relevant.
-- End with: "⚠️ This is informational guidance only and does not constitute legal advice."
+{instruction}
 """
 
         completion = nvidia_client.chat.completions.create(
@@ -123,7 +156,7 @@ INSTRUCTIONS:
             messages=[{"role": "user", "content": full_prompt}],
             temperature=0.3,
             top_p=0.95,
-            max_tokens=2048,
+            max_tokens=max_tokens,
             extra_body={
                 "chat_template_kwargs": {"enable_thinking": True},
                 "reasoning_budget": 2048
@@ -139,8 +172,31 @@ INSTRUCTIONS:
             if content:
                 full_response += content
 
+        # Auto summarize only for detailed answers
+        summary = None
+        if mode == "detailed":
+            summary_completion = nvidia_client.chat.completions.create(
+                model=MODEL,
+                messages=[{
+                    "role": "user",
+                    "content": f"Summarize this in 3 bullet points for a layperson:\n\n{full_response}"
+                }],
+                temperature=0.3,
+                max_tokens=256,
+                stream=True
+            )
+            summary = ""
+            for chunk in summary_completion:
+                if not chunk.choices:
+                    continue
+                content = chunk.choices[0].delta.content
+                if content:
+                    summary += content
+
         return jsonify({
             "response": full_response,
+            "summary": summary,
+            "mode": mode,
             "states_detected": states
         })
 
@@ -149,7 +205,7 @@ INSTRUCTIONS:
         return jsonify({
             "response": f"Error: {str(e)}",
             "traceback": traceback.format_exc()
-        }), 200  # force 200 so we can read the JSON   
+        }), 200 # force 200 so we can read the JSON   
 @app.route("/health")
 def health():
     return jsonify({
