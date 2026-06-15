@@ -116,11 +116,10 @@ INSTRUCTIONS:
 - End with: "⚠️ This is informational guidance only and does not constitute legal advice."
 """
 
-        # Stream response from NVIDIA and collect full text
         completion = nvidia_client.chat.completions.create(
             model=MODEL,
             messages=[{"role": "user", "content": full_prompt}],
-            temperature=0.3,        # lower = more factual for legal use
+            temperature=0.3,
             top_p=0.95,
             max_tokens=2048,
             extra_body={
@@ -144,8 +143,11 @@ INSTRUCTIONS:
         })
 
     except Exception as e:
-        return jsonify({"response": f"Error: {str(e)}"})
-        
+        import traceback
+        return jsonify({
+            "response": f"Error: {str(e)}",
+            "traceback": traceback.format_exc()
+        }), 200  # force 200 so we can read the JSON   
 @app.route("/health")
 def health():
     return jsonify({
