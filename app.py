@@ -145,7 +145,14 @@ INSTRUCTIONS:
 
     except Exception as e:
         return jsonify({"response": f"Error: {str(e)}"})
-
+        
+@app.route("/health")
+def health():
+    return jsonify({
+        "nvidia_key": bool(os.environ.get("NVIDIA_API_KEY")),
+        "supabase_url": bool(os.environ.get("SUPABASE_URL")),
+        "supabase_key": bool(os.environ.get("SUPABASE_SERVICE_KEY")),
+    })
 
 @app.route("/documents", methods=["GET"])
 def list_documents():
