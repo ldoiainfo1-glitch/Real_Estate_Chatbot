@@ -1,245 +1,186 @@
 from flask import Flask, request, jsonify
+from supabase import create_client, Client
 import requests
 import subprocess
 import threading
 import time
 import os
+import re
 
 app = Flask(__name__)
+
 MODEL = "qwen2:0.5b"
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 
-COMPANY_DATA = """
-COMPANY OVERVIEW
-Instantly.ai is a leading sales engagement and lead
-intelligence platform founded in 2021. Built for
-businesses of all sizes — from solopreneurs to global
-agencies — Instantly's mission is to be the simplest
-tool on the market to help people make money with
-cold email outreach.
+# ── Supabase ──────────────────────────────────────────────────────────────────
+SUPABASE_URL = os.environ.get("SUPABASE_URL")          # set in env / .env
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")  # service role key
 
-With over 35,000 customers worldwide and $20M in
-revenue, Instantly has grown into one of the most
-trusted names in B2B sales automation — all without
-any outside venture capital funding.
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-WHAT INSTANTLY.AI DOES
-Instantly.ai helps businesses turn leads into clients
-by combining four core capabilities in one platform:
+# ── Static system context (platform info + legal disclaimer) ──────────────────
+PLATFORM_CONTEXT = """
+PLATFORM: AI Property Legal Advisor – India
+Tagline : Understand Before You Invest
 
-- Automated Outreach
-  Create and launch personalized cold email campaigns
-  in minutes. AI crafts and personalizes messages at
-  scale, while smart workflows automatically route,
-  tag, and trigger follow-ups based on lead behavior.
+PURPOSE
+You are an AI-powered Indian real estate legal advisory assistant.
+Your job is to help buyers, investors, NRIs, brokers, and property owners
+understand legal, technical, and due-diligence aspects of real estate
+transactions in simple, plain language.
 
-- B2B Lead Database
-  Access a database of 450M+ verified contacts.
-  Filter by job title, company size, industry,
-  tech stack, location, and more to find the right
-  prospects fast.
+CAPABILITIES
+- Answer questions on Indian property laws, registration, stamp duty, RERA,
+  title verification, encumbrance, mutation, 7/12 extracts, sale deeds, etc.
+- Provide state-specific guidance where documents are available.
+- Generate structured due-diligence checklists on request.
+- Explain legal terminology in plain English / Hindi on request.
+- Highlight red flags and risk categories (Title / Approval / Litigation /
+  Encumbrance / Financial).
 
-- Email Deliverability Tools
-  Built-in email warm-up, inbox placement testing,
-  and a deliverability network ensure your messages
-  land in primary inboxes — not spam folders.
+LIMITATIONS – ALWAYS MENTION WHEN RELEVANT
+- This platform does NOT provide legal representation.
+- It does NOT certify title or guarantee investment outcomes.
+- It provides informational guidance only.
+- Users should consult a licensed advocate for final decisions.
 
-- AI-Powered CRM
-  Track opportunities, manage pipelines, automate
-  tasks, and get AI-driven insights — all within
-  the same platform. Native integrations with
-  HubSpot, Salesforce, and Pipedrive are available.
-
-KEY FEATURES
-- AI Sales Agents & Reply Agents
-- Unibox — centralized inbox for all email accounts
-- Website Visitor Identification
-- Campaign analytics (Opportunities, Pipeline,
-  Conversions, Revenue)
-- Unlimited email sending accounts
-- Multi-channel outreach (Email, Calls, SMS)
-- API access & Zapier integrations
-- Instantly Academy for learning & community
-
-WHO IT'S FOR
-Instantly.ai serves a wide range of users including:
-- Startups and founders doing founder-led sales
-- Sales teams and SDRs scaling outreach
-- Marketing agencies managing multiple clients
-- Freelancers and solopreneurs growing their pipeline
-
-COMPANY FACTS
-- Founded     : 2021
-- CEO/Founder : Nils Schneider
-- Employees   : ~15
-- Revenue     : $20M (2024)
-- Funding     : Bootstrapped (no outside investment)
-- Customers   : 35,000+
-- Headquarters: Sheridan, Wyoming, USA
-
-WEBSITE & CONTACT
-Website  : https://instantly.ai
-Support  : https://support.instantly.ai
-Community: Facebook Group & Slack Community
-Academy  : https://instantly.ai/academy
-
-PRIVACY POLICY
-Instantly.ai (operated by Foo Monk, LLC) collects and processes personal data
-to provide its data marketing and sales engagement services.
-
-Data collected includes: full name, email, job title, company, professional
-history, phone number, postal address, IP address, cookie/device identifiers,
-email interaction data, demographic info, and consumer behavioral data.
-
-Data sources: third-party data compilers, publicly available websites,
-government agencies, and Instantly's customers and partners.
-
-Data is used for: B2B marketing and outreach services, audience segmentation,
-email retargeting, campaign performance measurement, email validation, and
-internal product development.
-
-Data is shared with: Instantly's customers (businesses, agencies, non-profits,
-recruiters), service providers, business and data partners, and law enforcement
-when legally required.
-
-Privacy contact: privacy@instantly.ai
-Full policy: https://instantly.ai/privacy
-
-DATA OPT-OUT & CONSUMER RIGHTS
-Users have the right to access, correct, or delete their personal data, and to
-opt out of the sale or sharing of their data.
-
-Opt-out options:
-- Online : app.instantly.ai/privacy/opt-out
-- Phone  : 1-866-467-8688 (Service Code 1974#)
-- GPC signal supported on all browsers
-
-Opt-out requests processed within 1 business day. Data removal from active
-marketing databases takes up to 15 business days.
-
-CALIFORNIA PRIVACY RIGHTS (CCPA)
-California residents have rights to know, access, delete, and opt out of the
-sale of their data. Instantly does NOT knowingly collect or sell data of minors
-under 16 years of age.
-
-GDPR (EU & UK RESIDENTS)
-Instantly complies with GDPR for EU and UK residents.
-EU Representative: EDPO, Avenue Huart Hamoir 71, 1030 Brussels, Belgium
-UK Representative: EDPO UK Ltd, Unit 33, Waterside, 44-48 Wharf Road, London
-
-SECURITY
-Instantly uses firewall protections, data encryption in transit and at rest,
-hashing and truncation of sensitive data, and strict access controls.
-
-TERMS OF SERVICE
-Users must comply with anti-spam laws (CAN-SPAM, GDPR, CASL).
-Full Terms: https://instantly.ai/terms
-
-PRODUCTS
-1. Outreach         - instantly.ai/outreach
-2. AI Sales Agent   - instantly.ai/ai-agents/sales-agent
-3. AI Reply Agent   - instantly.ai/ai-agents/reply-agent
-4. Lead Database    - instantly.ai/b2b-lead-finder
-5. Email Verification - instantly.ai/email-verification
-6. CRM              - instantly.ai/crm
-7. Email Warmup     - instantly.ai/email-warmup
-8. Inbox Placement  - instantly.ai/inbox-placement
-9. Website Visitors - instantly.ai/website-visitors
-10. Email Accounts  - instantly.ai/email-accounts
-11. Copilot (AI)    - instantly.ai/copilot
-12. Automations     - instantly.ai/ai-agents/automations
-13. Airmail         - instantly.ai/airmail
-14. Unibox          - Centralized multi-inbox management
-
-PRICING
-14-day free trial available (no credit card needed).
-Flat-fee subscription plans. Details: instantly.ai/pricing
-
-HR NOTICE
-We're sorry, we're unable to provide HR-related information through this
-channel at this time. For any HR queries such as leave policies, office
-timings, WFH policy, payroll, or anything else related to employment, please
-reach out directly to our HR team — they'll be happy to help you.
-hr@instantly.ai
-We apologize for any inconvenience.
+RISK LABELS
+🟢 Low Risk  |  🟡 Moderate Risk  |  🔴 High Risk
 """
 
-DATA_FOLDER = "company_data"
+# Indian states / UTs for keyword detection
+STATE_KEYWORDS = {
+    "maharashtra": ["maharashtra", "mumbai", "pune", "nagpur", "thane", "nashik"],
+    "karnataka":   ["karnataka", "bangalore", "bengaluru", "mysore", "hubli"],
+    "tamil_nadu":  ["tamil nadu", "tamilnadu", "chennai", "coimbatore", "madurai"],
+    "telangana":   ["telangana", "hyderabad", "warangal", "nizamabad"],
+    "delhi":       ["delhi", "new delhi", "ncr"],
+    "gujarat":     ["gujarat", "ahmedabad", "surat", "vadodara"],
+    "rajasthan":   ["rajasthan", "jaipur", "jodhpur", "udaipur"],
+    "uttar_pradesh": ["uttar pradesh", "up", "lucknow", "noida", "ghaziabad", "agra"],
+    "west_bengal": ["west bengal", "kolkata", "calcutta", "howrah"],
+    "kerala":      ["kerala", "kochi", "thiruvananthapuram", "kozhikode"],
+}
 
 
-def load_company_data():
-    global COMPANY_DATA
-    if not os.path.exists(DATA_FOLDER):
-        os.makedirs(DATA_FOLDER)
-    extra_texts = []
-    for filename in os.listdir(DATA_FOLDER):
-        filepath = os.path.join(DATA_FOLDER, filename)
-        if filename.endswith(".txt"):
-            with open(filepath, "r", encoding="utf-8") as f:
-                extra_texts.append(f.read())
-    if extra_texts:
-        COMPANY_DATA += "\n\n" + "\n\n".join(extra_texts)
-    print("Company data loaded")
+def detect_states(text: str) -> list[str]:
+    text_lower = text.lower()
+    matched = []
+    for state, keywords in STATE_KEYWORDS.items():
+        if any(kw in text_lower for kw in keywords):
+            matched.append(state)
+    return matched
 
 
+def fetch_documents(states: list[str]) -> str:
+    """
+    Pull matching rows from Supabase `documents` table.
+    If states detected → filter by filename ILIKE.
+    If no state detected → fetch all rows (general query).
+    Max ~4 docs to keep context window manageable.
+    """
+    try:
+        if states:
+            # Build OR filter: filename ilike '%maharashtra%' OR '%karnataka%' ...
+            filters = [f"filename.ilike.%{s}%" for s in states]
+            filter_str = ",".join(filters)
+            result = (
+                supabase.table("documents")
+                .select("filename, content")
+                .or_(filter_str)
+                .limit(4)
+                .execute()
+            )
+        else:
+            result = (
+                supabase.table("documents")
+                .select("filename, content")
+                .limit(4)
+                .execute()
+            )
+
+        rows = result.data or []
+        if not rows:
+            return "No relevant state documents found in knowledge base."
+
+        parts = []
+        for row in rows:
+            parts.append(
+                f"--- Document: {row['filename']} ---\n{row['content']}\n"
+            )
+        return "\n".join(parts)
+
+    except Exception as e:
+        return f"[Supabase error: {str(e)}]"
+
+
+# ── Ollama startup ─────────────────────────────────────────────────────────────
 def start_ollama():
     subprocess.Popen(
         ["ollama", "serve"],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
+        stderr=subprocess.DEVNULL,
     )
-    # Wait until Ollama is actually ready
-    for i in range(30):
+    for _ in range(30):
         try:
             r = requests.get("http://127.0.0.1:11434")
             if r.status_code == 200:
                 print("Ollama is ready")
                 break
-        except:
+        except Exception:
             pass
         time.sleep(2)
     subprocess.run(["ollama", "pull", MODEL])
     print(f"Model {MODEL} is ready")
 
 
-threading.Thread(target=start_ollama).start()
-load_company_data()
+threading.Thread(target=start_ollama, daemon=True).start()
 
 
+# ── Routes ────────────────────────────────────────────────────────────────────
 @app.route("/")
 def home():
-    return {
-        "status": "running",
-        "model": MODEL
-    }
+    return jsonify({"status": "running", "model": MODEL})
 
 
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
-        data = request.json
-        prompt = data.get("prompt", "")
-        full_prompt = f"""You are a customer support assistant for Instantly.ai.
-Answer ONLY using the COMPANY INFORMATION provided below.
-Do NOT use any outside knowledge.
-If the answer is not in the data, say: "I could not find that information in company records."
+        data = request.json or {}
+        prompt = data.get("prompt", "").strip()
+        if not prompt:
+            return jsonify({"response": "No prompt provided."})
 
-COMPANY INFORMATION:
-{COMPANY_DATA}
+        # 1. Detect state from user query
+        states = detect_states(prompt)
+
+        # 2. Fetch relevant documents from Supabase
+        knowledge = fetch_documents(states)
+
+        # 3. Build full prompt
+        full_prompt = f"""{PLATFORM_CONTEXT}
+
+KNOWLEDGE BASE (use ONLY this for your answer):
+{knowledge}
 
 QUESTION: {prompt}
+
+INSTRUCTIONS:
+- Answer in clear, simple language suitable for a layperson.
+- If state-specific laws differ, mention the relevant state explicitly.
+- If the answer is not in the knowledge base, say:
+  "I could not find that information in the current knowledge base. Please consult a licensed property advocate."
+- Add a risk label (🟢/🟡/🔴) when relevant.
+- End with: "⚠️ This is informational guidance only and does not constitute legal advice."
 """
+
+        # 4. Call Ollama
         response = requests.post(
             OLLAMA_URL,
-            json={
-                "model": MODEL,
-                "prompt": full_prompt,
-                "stream": False
-            },
-            timeout=120
+            json={"model": MODEL, "prompt": full_prompt, "stream": False},
+            timeout=120,
         )
 
-        # Debug: print raw response if something goes wrong
         if response.status_code != 200:
             return jsonify({
                 "response": f"Ollama error: HTTP {response.status_code} — {response.text}"
@@ -250,23 +191,32 @@ QUESTION: {prompt}
                 "response": "Ollama returned an empty response. Model may still be loading."
             })
 
-        ollama_response = response.json()
+        ollama_data = response.json()
         return jsonify({
-            "response": ollama_response.get("response", "No response from model.")
+            "response": ollama_data.get("response", "No response from model."),
+            "states_detected": states,
         })
 
     except requests.exceptions.ConnectionError:
         return jsonify({
-            "response": "Cannot connect to Ollama. It may still be starting up — please wait and try again."
+            "response": "Cannot connect to Ollama. It may still be starting — please wait and retry."
         })
     except requests.exceptions.Timeout:
         return jsonify({
             "response": "Request timed out. The model is taking too long to respond."
         })
     except Exception as e:
-        return jsonify({
-            "response": f"Error: {str(e)}"
-        })
+        return jsonify({"response": f"Error: {str(e)}"})
+
+
+@app.route("/documents", methods=["GET"])
+def list_documents():
+    """Utility endpoint — lists all filenames in the knowledge base."""
+    try:
+        result = supabase.table("documents").select("id, filename, created_at").execute()
+        return jsonify({"documents": result.data})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":
