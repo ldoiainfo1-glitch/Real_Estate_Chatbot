@@ -1,140 +1,86 @@
 from flask import Flask, request, jsonify
 from supabase import create_client, Client
-import requests
-import subprocess
-import threading
-import time
+from openai import OpenAI
 import os
-import re
 
 app = Flask(__name__)
 
-MODEL = "qwen2:0.5b"
-OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
+# ── NVIDIA ────────────────────────────────────────────────────────────────────
+nvidia_client = OpenAI(
+    base_url="https://integrate.api.nvidia.com/v1",
+    api_key=os.environ.get("NVIDIA_API_KEY")
+)
+MODEL = "nvidia/nemotron-3-ultra-550b-a55b"
 
 # ── Supabase ──────────────────────────────────────────────────────────────────
-SUPABASE_URL = os.environ.get("SUPABASE_URL")          # set in env / .env
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")  # service role key
+supabase: Client = create_client(
+    os.environ.get("SUPABASE_URL"),
+    os.environ.get("SUPABASE_SERVICE_KEY")
+)
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# ── Static system context (platform info + legal disclaimer) ──────────────────
+# ── Platform context ──────────────────────────────────────────────────────────
 PLATFORM_CONTEXT = """
 PLATFORM: AI Property Legal Advisor – India
 Tagline : Understand Before You Invest
 
-PURPOSE
 You are an AI-powered Indian real estate legal advisory assistant.
-Your job is to help buyers, investors, NRIs, brokers, and property owners
-understand legal, technical, and due-diligence aspects of real estate
-transactions in simple, plain language.
+Help buyers, investors, NRIs, brokers, and property owners understand
+legal, technical, and due-diligence aspects of real estate transactions
+in simple plain language.
 
 CAPABILITIES
-- Answer questions on Indian property laws, registration, stamp duty, RERA,
-  title verification, encumbrance, mutation, 7/12 extracts, sale deeds, etc.
+- Answer questions on Indian property laws, registration, stamp duty,
+  RERA, title verification, encumbrance, mutation, 7/12 extracts, sale deeds.
 - Provide state-specific guidance where documents are available.
 - Generate structured due-diligence checklists on request.
 - Explain legal terminology in plain English / Hindi on request.
-- Highlight red flags and risk categories (Title / Approval / Litigation /
-  Encumbrance / Financial).
+- Highlight red flags and risk categories:
+  Title / Approval / Litigation / Encumbrance / Financial
 
-LIMITATIONS – ALWAYS MENTION WHEN RELEVANT
-- This platform does NOT provide legal representation.
-- It does NOT certify title or guarantee investment outcomes.
-- It provides informational guidance only.
+LIMITATIONS
+- Does NOT provide legal representation.
+- Does NOT certify title or guarantee investment outcomes.
+- Provides informational guidance only.
 - Users should consult a licensed advocate for final decisions.
 
-RISK LABELS
-🟢 Low Risk  |  🟡 Moderate Risk  |  🔴 High Risk
+RISK LABELS: 🟢 Low  |  🟡 Moderate  |  🔴 High
 """
 
-# Indian states / UTs for keyword detection
 STATE_KEYWORDS = {
-    "maharashtra": ["maharashtra", "mumbai", "pune", "nagpur", "thane", "nashik"],
-    "karnataka":   ["karnataka", "bangalore", "bengaluru", "mysore", "hubli"],
-    "tamil_nadu":  ["tamil nadu", "tamilnadu", "chennai", "coimbatore", "madurai"],
-    "telangana":   ["telangana", "hyderabad", "warangal", "nizamabad"],
-    "delhi":       ["delhi", "new delhi", "ncr"],
-    "gujarat":     ["gujarat", "ahmedabad", "surat", "vadodara"],
-    "rajasthan":   ["rajasthan", "jaipur", "jodhpur", "udaipur"],
-    "uttar_pradesh": ["uttar pradesh", "up", "lucknow", "noida", "ghaziabad", "agra"],
-    "west_bengal": ["west bengal", "kolkata", "calcutta", "howrah"],
-    "kerala":      ["kerala", "kochi", "thiruvananthapuram", "kozhikode"],
+    "maharashtra":    ["maharashtra", "mumbai", "pune", "nagpur", "thane", "nashik"],
+    "karnataka":      ["karnataka", "bangalore", "bengaluru", "mysore", "hubli"],
+    "tamil_nadu":     ["tamil nadu", "tamilnadu", "chennai", "coimbatore", "madurai"],
+    "telangana":      ["telangana", "hyderabad", "warangal", "nizamabad"],
+    "delhi":          ["delhi", "new delhi", "ncr"],
+    "gujarat":        ["gujarat", "ahmedabad", "surat", "vadodara"],
+    "rajasthan":      ["rajasthan", "jaipur", "jodhpur", "udaipur"],
+    "uttar_pradesh":  ["uttar pradesh", "up", "lucknow", "noida", "ghaziabad", "agra"],
+    "west_bengal":    ["west bengal", "kolkata", "calcutta", "howrah"],
+    "kerala":         ["kerala", "kochi", "thiruvananthapuram", "kozhikode"],
 }
 
 
-def detect_states(text: str) -> list[str]:
+def detect_states(text: str) -> list:
     text_lower = text.lower()
-    matched = []
-    for state, keywords in STATE_KEYWORDS.items():
-        if any(kw in text_lower for kw in keywords):
-            matched.append(state)
-    return matched
+    return [s for s, kws in STATE_KEYWORDS.items() if any(k in text_lower for k in kws)]
 
 
-def fetch_documents(states: list[str]) -> str:
-    """
-    Pull matching rows from Supabase `documents` table.
-    If states detected → filter by filename ILIKE.
-    If no state detected → fetch all rows (general query).
-    Max ~4 docs to keep context window manageable.
-    """
+def fetch_documents(states: list) -> str:
     try:
         if states:
-            # Build OR filter: filename ilike '%maharashtra%' OR '%karnataka%' ...
-            filters = [f"filename.ilike.%{s}%" for s in states]
-            filter_str = ",".join(filters)
-            result = (
-                supabase.table("documents")
-                .select("filename, content")
-                .or_(filter_str)
-                .limit(4)
-                .execute()
-            )
+            filter_str = ",".join([f"filename.ilike.%{s}%" for s in states])
+            result = supabase.table("documents").select("filename, content").or_(filter_str).limit(4).execute()
         else:
-            result = (
-                supabase.table("documents")
-                .select("filename, content")
-                .limit(4)
-                .execute()
-            )
+            result = supabase.table("documents").select("filename, content").limit(4).execute()
 
         rows = result.data or []
         if not rows:
-            return "No relevant state documents found in knowledge base."
+            return "No relevant documents found in knowledge base."
 
-        parts = []
-        for row in rows:
-            parts.append(
-                f"--- Document: {row['filename']} ---\n{row['content']}\n"
-            )
-        return "\n".join(parts)
+        return "\n".join([f"--- {r['filename']} ---\n{r['content']}" for r in rows])
 
     except Exception as e:
         return f"[Supabase error: {str(e)}]"
-
-
-# ── Ollama startup ─────────────────────────────────────────────────────────────
-def start_ollama():
-    subprocess.Popen(
-        ["ollama", "serve"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    for _ in range(30):
-        try:
-            r = requests.get("http://127.0.0.1:11434")
-            if r.status_code == 200:
-                print("Ollama is ready")
-                break
-        except Exception:
-            pass
-        time.sleep(2)
-    subprocess.run(["ollama", "pull", MODEL])
-    print(f"Model {MODEL} is ready")
-
-
-threading.Thread(target=start_ollama, daemon=True).start()
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -151,13 +97,9 @@ def chat():
         if not prompt:
             return jsonify({"response": "No prompt provided."})
 
-        # 1. Detect state from user query
         states = detect_states(prompt)
-
-        # 2. Fetch relevant documents from Supabase
         knowledge = fetch_documents(states)
 
-        # 3. Build full prompt
         full_prompt = f"""{PLATFORM_CONTEXT}
 
 KNOWLEDGE BASE (use ONLY this for your answer):
@@ -166,52 +108,47 @@ KNOWLEDGE BASE (use ONLY this for your answer):
 QUESTION: {prompt}
 
 INSTRUCTIONS:
-- Answer in clear, simple language suitable for a layperson.
-- If state-specific laws differ, mention the relevant state explicitly.
-- If the answer is not in the knowledge base, say:
-  "I could not find that information in the current knowledge base. Please consult a licensed property advocate."
-- Add a risk label (🟢/🟡/🔴) when relevant.
+- Answer in clear simple language for a layperson.
+- Mention the relevant state explicitly if state-specific.
+- If answer not in knowledge base say:
+  "I could not find that information. Please consult a licensed property advocate."
+- Add risk label 🟢/🟡/🔴 where relevant.
 - End with: "⚠️ This is informational guidance only and does not constitute legal advice."
 """
 
-        # 4. Call Ollama
-        response = requests.post(
-            OLLAMA_URL,
-            json={"model": MODEL, "prompt": full_prompt, "stream": False},
-            timeout=120,
+        # Stream response from NVIDIA and collect full text
+        completion = nvidia_client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": full_prompt}],
+            temperature=0.3,        # lower = more factual for legal use
+            top_p=0.95,
+            max_tokens=2048,
+            extra_body={
+                "chat_template_kwargs": {"enable_thinking": True},
+                "reasoning_budget": 2048
+            },
+            stream=True
         )
 
-        if response.status_code != 200:
-            return jsonify({
-                "response": f"Ollama error: HTTP {response.status_code} — {response.text}"
-            })
+        full_response = ""
+        for chunk in completion:
+            if not chunk.choices:
+                continue
+            content = chunk.choices[0].delta.content
+            if content:
+                full_response += content
 
-        if not response.text.strip():
-            return jsonify({
-                "response": "Ollama returned an empty response. Model may still be loading."
-            })
-
-        ollama_data = response.json()
         return jsonify({
-            "response": ollama_data.get("response", "No response from model."),
-            "states_detected": states,
+            "response": full_response,
+            "states_detected": states
         })
 
-    except requests.exceptions.ConnectionError:
-        return jsonify({
-            "response": "Cannot connect to Ollama. It may still be starting — please wait and retry."
-        })
-    except requests.exceptions.Timeout:
-        return jsonify({
-            "response": "Request timed out. The model is taking too long to respond."
-        })
     except Exception as e:
         return jsonify({"response": f"Error: {str(e)}"})
 
 
 @app.route("/documents", methods=["GET"])
 def list_documents():
-    """Utility endpoint — lists all filenames in the knowledge base."""
     try:
         result = supabase.table("documents").select("id, filename, created_at").execute()
         return jsonify({"documents": result.data})
