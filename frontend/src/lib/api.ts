@@ -11,13 +11,36 @@ export interface ChatApiError {
   status?: number;
 }
 
+export interface HistoryMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+const HISTORY_LIMIT = 20;
+
+/**
+ * Build a single prompt that includes recent conversation history so the
+ * assistant can answer follow-up questions in context.
+ */
+function buildPrompt(prompt: string, history: HistoryMessage[]): string {
+  if (!history.length) return prompt;
+
+  const recent = history.slice(-HISTORY_LIMIT);
+  const conversation = recent
+    .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
+    .join("\n\n");
+
+  return `Here is the conversation so far:\n\n${conversation}\n\nAnswer the following user message in context of the conversation above:\n${prompt}`;
+}
+
 /**
  * Send a prompt to the real-estate chatbot backend and return the parsed
  * response. Throws a friendly ChatApiError on failure.
  */
 export async function sendChatMessage(
   prompt: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  history: HistoryMessage[] = []
 ): Promise<ChatResponse> {
   let res: Response;
 
@@ -28,7 +51,7 @@ export async function sendChatMessage(
         "Content-Type": "application/json",
         Accept: "application/json",
       },
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ prompt: buildPrompt(prompt, history) }),
       signal,
     });
   } catch (err) {

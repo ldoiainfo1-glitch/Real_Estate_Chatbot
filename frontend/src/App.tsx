@@ -9,13 +9,38 @@ import { normalizeStates, sendChatMessage } from "./lib/api";
 import { streamText } from "./lib/stream";
 
 const uid = () => Math.random().toString(36).slice(2);
+const SESSION_KEY = "estatesage_session";
 
 function buildIntakePrompt(answers: IntakeAnswers): string {
   return `I am a ${answers.userType.toLowerCase()} in ${answers.location}, dealing with a ${answers.propertyType.toLowerCase()}. I need help with ${answers.topic}. Please explain the relevant laws, procedures, documents, and risks I should be aware of in simple terms.`;
 }
 
+function serializeMessages(messages: Message[]): string {
+  return JSON.stringify(
+    messages.map(({ id, role, content, states, error }) => ({
+      id,
+      role,
+      content,
+      states,
+      error,
+      // Never persist an active streaming state across reloads.
+      streaming: false,
+    }))
+  );
+}
+
+function loadSessionMessages(): Message[] {
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw) as Message[];
+  } catch {
+    return [];
+  }
+}
+
 export default function App() {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<Message[]>(loadSessionMessages);
   const [loading, setLoading] = useState(false);
   const [streamingId, setStreamingId] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -23,6 +48,15 @@ export default function App() {
   const stopStreamRef = useRef<(() => void) | null>(null);
 
   const hasMessages = messages.length > 0;
+
+  // Persist conversation to sessionStorage on every change.
+  useEffect(() => {
+    if (messages.length) {
+      sessionStorage.setItem(SESSION_KEY, serializeMessages(messages));
+    } else {
+      sessionStorage.removeItem(SESSION_KEY);
+    }
+  }, [messages]);
 
   // Auto-scroll to the newest message / typing indicator.
   useEffect(() => {
@@ -44,6 +78,11 @@ export default function App() {
   const handleSend = async (text: string) => {
     if (loading) return;
 
+    // Capture history *before* adding the new user message.
+    const history = messages
+      .filter((m) => !m.error && !m.streaming)
+      .map((m) => ({ role: m.role, content: m.content }));
+
     const userMsg: Message = { id: uid(), role: "user", content: text };
     setMessages((prev) => [...prev, userMsg]);
     setLoading(true);
@@ -52,7 +91,7 @@ export default function App() {
     abortRef.current = controller;
 
     try {
-      const data = await sendChatMessage(text, controller.signal);
+      const data = await sendChatMessage(text, controller.signal, history);
       const fullText = data.response || "I couldn't generate a response for that.";
       const states = normalizeStates(data.states_detected);
 
