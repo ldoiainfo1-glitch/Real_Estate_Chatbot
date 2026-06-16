@@ -7,6 +7,7 @@ import {
   CopyIcon,
   PinIcon,
   SparkleIcon,
+  StopIcon,
   UserIcon,
 } from "./Icons";
 
@@ -16,9 +17,16 @@ export interface Message {
   content: string;
   states?: string[];
   error?: boolean;
+  streaming?: boolean;
 }
 
-export default function ChatMessage({ message }: { message: Message }) {
+export default function ChatMessage({
+  message,
+  onStop,
+}: {
+  message: Message;
+  onStop?: () => void;
+}) {
   const [copied, setCopied] = useState(false);
   const isUser = message.role === "user";
 
@@ -48,7 +56,8 @@ export default function ChatMessage({ message }: { message: Message }) {
             ? "bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-indigo-500/30"
             : message.error
             ? "bg-gradient-to-br from-rose-500 to-red-600 text-white shadow-rose-500/30"
-            : "bg-gradient-to-br from-emerald-400 to-teal-500 text-white shadow-emerald-500/30"
+            : "bg-gradient-to-br from-emerald-400 to-teal-500 text-white shadow-emerald-500/30",
+          message.streaming && !isUser && "pulse-ring"
         )}
       >
         {isUser ? (
@@ -82,20 +91,31 @@ export default function ChatMessage({ message }: { message: Message }) {
           ) : message.error ? (
             <p className="whitespace-pre-wrap break-words">{message.content}</p>
           ) : (
-            <Markdown>{message.content}</Markdown>
+            <>
+              <Markdown>{message.content}</Markdown>
+              {message.streaming && (
+                <span className="cursor-blink ml-0.5 inline-block h-4 w-[2px] rounded-full bg-emerald-400 align-middle" />
+              )}
+            </>
           )}
 
-          {/* Copy button */}
+          {/* Copy / Stop button */}
           {!isUser && (
             <button
-              onClick={copy}
-              title="Copy response"
+              onClick={message.streaming ? onStop : copy}
+              title={message.streaming ? "Stop generating" : "Copy response"}
               className={cn(
-                "absolute -bottom-3 right-2 flex items-center gap-1 rounded-full border border-white/10 bg-ink-800/90 px-2 py-1 text-[0.65rem] font-medium text-slate-300 opacity-0 shadow-lg backdrop-blur transition-all hover:text-white",
-                "group-hover:opacity-100 focus-visible:opacity-100"
+                "absolute -bottom-3 right-2 flex items-center gap-1 rounded-full border px-2 py-1 text-[0.65rem] font-medium shadow-lg backdrop-blur transition-all",
+                message.streaming
+                  ? "border-rose-400/30 bg-rose-500/20 text-rose-200 opacity-100 hover:bg-rose-500/30"
+                  : "border-white/10 bg-ink-800/90 text-slate-300 opacity-0 hover:text-white group-hover:opacity-100 focus-visible:opacity-100"
               )}
             >
-              {copied ? (
+              {message.streaming ? (
+                <>
+                  <StopIcon className="h-3 w-3" /> Stop
+                </>
+              ) : copied ? (
                 <>
                   <CheckIcon className="h-3 w-3 text-emerald-400" /> Copied
                 </>
@@ -109,7 +129,7 @@ export default function ChatMessage({ message }: { message: Message }) {
         </div>
 
         {/* Detected states */}
-        {!isUser && message.states && message.states.length > 0 && (
+        {!isUser && !message.streaming && message.states && message.states.length > 0 && (
           <div className="mt-4 flex flex-wrap items-center gap-1.5">
             {message.states.map((s) => (
               <span

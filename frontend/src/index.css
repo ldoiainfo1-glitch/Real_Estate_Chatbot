@@ -183,6 +183,15 @@ body {
   animation: pop-in 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+/* Typing cursor blink */
+@keyframes blink-cursor {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+.cursor-blink {
+  animation: blink-cursor 1s step-end infinite;
+}
+
 /* Typing dots */
 @keyframes bounce-dot {
   0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
